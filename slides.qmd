@@ -1,0 +1,1106 @@
+---
+title: "Hybrid Mechanism-Design and Linear Programming Approaches to Higher-education Scheduling"
+author: "Victor Avramov"
+institute: "NBU"
+date: "05-6-2025"
+format:
+  revealjs:
+    theme: [default]
+    scrollable: true
+    slide-number: true
+    chalkboard: true
+    preview-links: auto
+    transition: slide
+    highlight-style: github
+    css: styles.css
+    mermaid:
+      theme: default
+      mermaid-format: png
+      fig-align: center
+      fig-width: 10
+      fig-height: 7
+---
+
+## The Scheduling Challenge {background-color="#1e3a5f"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### Scale
+- 10,000 students
+- 2,000 courses  
+- 600 lecturers
+- 150 teaching spaces
+- 42 time slots/week
+:::
+
+::: {.column width="50%"}
+### Complexity
+- Room capacity constraints
+- Time-varying availability
+- Lecturer preferences
+- Student enrollments
+- **84,000 potential assignments!**
+:::
+::::
+
+::: {.notes}
+Universities face an enormously complex scheduling problem. Traditional approaches either ignore preferences or fail to scale.
+:::
+
+---
+
+## Current Approaches: Critical Gaps
+
+```{r create_scheduling_gaps_diagram, echo=FALSE, message=FALSE, warning=FALSE}
+# 1) Load necessary libraries
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+# 2) Build the graph with Graphviz syntax
+g <- grViz("
+  digraph scheduling_gaps {
+    # Global node attributes
+    node [
+      shape=box
+      style=filled
+      fontname=Helvetica
+      fontsize=14
+      margin=\"0.3,0.2\"
+      penwidth=2
+    ];
+
+    # Define nodes (inputs in blue, outputs/problems in red)
+    A [label = 'Manual Scheduling',  fillcolor = '#3498db', fontcolor = 'white'];
+    B [label = 'Basic Optimization', fillcolor = '#3498db', fontcolor = 'white'];
+    C [label = 'Preference Systems', fillcolor = '#3498db', fontcolor = 'white'];
+    D [label = 'Poor Quality',       fillcolor = '#ff6b6b', fontcolor = 'white'];
+    E [label = 'Ignores Preferences',fillcolor = '#ff6b6b', fontcolor = 'white'];
+    F [label = 'Not Strategy-proof', fillcolor = '#ff6b6b', fontcolor = 'white'];
+
+    # Arrows
+    A -> D;
+    B -> E;
+    C -> F;
+
+    edge [
+      color = '#555555'
+      arrowhead = vee
+      penwidth = 2
+    ];
+  }
+")
+
+# 3) Export as SVG string
+svg_str <- export_svg(g)
+
+# 4) Write the SVG to disk
+writeLines(svg_str, "scheduling_gaps.svg")
+
+# 5) Convert the SVG to a PNG file (this requires rsvg package)
+rsvg_png("scheduling_gaps.svg", "scheduling_gaps.png")
+
+```
+![](scheduling_gaps.png){width=80%}
+
+::: {.incremental}
+- **Manual**: Time-intensive, suboptimal outcomes
+- **Pure LP**: Efficient but ignores human factors
+- **Simple preferences**: Vulnerable to gaming
+- **Result**: Dissatisfied faculty, poor resource use, high cost to scheduling
+:::
+
+---
+
+## Our Goal: Hybrid Approach 
+
+:::: {.columns}
+::: {.column width="60%"}
+### Two-Stage Algorithm
+
+**Stage 1: Mechanism Design (VCG)**
+- Truthful preference elicitation
+- Individual optimization
+- Strategy-proof incentives
+
+**Stage 2: Global LP**  
+- Resource allocation
+- Conflict resolution
+- System-wide optimization
+:::
+
+::: {.column width="40%"}
+### Key Idea
+
+>  to combine **truthfulness** of mechanism design with the **efficiency** of linear programming
+:::
+::::
+
+---
+
+## Stage 1: Synthetic Schedule
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load required packages
+library(tidyverse)
+library(patchwork)
+
+# 1) Slot Utilization Summary
+slot_util <- tibble(
+  Metric = c("Average", "Max", "Min"),
+  Courses = c(47.6, 92, 4)
+)
+
+p1 <- ggplot(slot_util, aes(x = Metric, y = Courses, fill = Metric)) +
+  geom_col(show.legend = FALSE, width = 0.6) +
+  scale_fill_manual(values = c("Average" = "#2ecc71", "Max" = "#3498db", "Min" = "#e74c3c")) +
+  geom_text(aes(label = Courses), vjust = -0.5, size = 5) +
+  labs(
+    title = "Slot Utilization",
+    x = NULL,
+    y = "Courses per Slot"
+  ) +
+  ylim(0, max(slot_util$Courses) * 1.1) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(size = 13)
+  )
+
+# 2) Resource Scarcity Data
+scarcity <- tribble(
+  ~Day,      ~Time,        ~Used, ~Total,
+  "Friday",  "08:00-09:30", 27,    105,
+  "Friday",  "09:40-11:10", 85,    150,
+  "Friday",  "11:20-12:50", 79,    150,
+  "Friday",  "13:00-14:30", 63,    135,
+  "Friday",  "14:40-16:10", 68,    150,
+  "Friday",  "16:20-17:50", 25,    120,
+  "Friday",  "18:00-19:30", 10,     60,
+  "Monday",  "08:00-09:30", 32,    105,
+  "Monday",  "09:40-11:10", 84,    150,
+  "Monday",  "11:20-12:50", 71,    150,
+  "Monday",  "13:00-14:30", 68,    135,
+  "Monday",  "14:40-16:10", 70,    150,
+  "Monday",  "16:20-17:50", 39,    120,
+  "Monday",  "18:00-19:30", 12,     60,
+  "Saturday","08:00-09:30", 24,    105,
+  "Saturday","09:40-11:10", 32,    150,
+  "Saturday","11:20-12:50", 28,    150,
+  "Saturday","13:00-14:30", 22,    135,
+  "Saturday","14:40-16:10", 21,    150,
+  "Saturday","16:20-17:50", 20,    120,
+  "Saturday","18:00-19:30",  5,     60,
+  "Thursday","08:00-09:30", 41,    105,
+  "Thursday","09:40-11:10", 82,    150,
+  "Thursday","11:20-12:50", 80,    150,
+  "Thursday","13:00-14:30", 72,    135,
+  "Thursday","14:40-16:10", 56,    150,
+  "Thursday","16:20-17:50", 30,    120,
+  "Thursday","18:00-19:30", 13,     60,
+  "Tuesday", "08:00-09:30", 39,    105,
+  "Tuesday", "09:40-11:10", 81,    150,
+  "Tuesday", "11:20-12:50", 92,    150,
+  "Tuesday", "13:00-14:30", 77,    135,
+  "Tuesday", "14:40-16:10", 59,    150,
+  "Tuesday", "16:20-17:50", 37,    120,
+  "Tuesday", "18:00-19:30",  5,     60,
+  "Wednesday","08:00-09:30", 31,    105,
+  "Wednesday","09:40-11:10", 78,    150,
+  "Wednesday","11:20-12:50", 81,    150,
+  "Wednesday","13:00-14:30", 62,    135,
+  "Wednesday","14:40-16:10", 61,    150,
+  "Wednesday","16:20-17:50", 34,    120,
+  "Wednesday","18:00-19:30",  4,     60
+) %>%
+  mutate(
+    Percent = round((Used / Total) * 100, 1),
+    Day = factor(Day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")),
+    Time = factor(Time, levels = c("08:00-09:30", "09:40-11:10", "11:20-12:50",
+                                   "13:00-14:30", "14:40-16:10", "16:20-17:50", "18:00-19:30"))
+  )
+
+# 3) Heatmap of Resource Scarcity (Percent Full)
+p2 <- ggplot(scarcity, aes(x = Time, y = Day, fill = Percent)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#2c7fb8", name = "% Full") +
+  geom_text(aes(label = paste0(Percent, "%")), color = "black", size = 3.5) +
+  labs(
+    title = "Resource Scarcity: Room Utilization by Day & Time",
+    x = "Time Slot",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 11),
+    panel.grid = element_blank()
+  )
+
+# Combine the two plots vertically
+p1 / p2 + plot_layout(heights = c(6, 4))
+```
+
+---
+
+## Stage 2: Synthetic Preference Elicitation
+
+### Behavioral Archetypes (n~600 lecturers)
+
+```{r fig.width=10, fig.height=5, echo=FALSE, message=FALSE}
+library(tidyverse)
+
+# 1a) Archetype distribution bar chart
+archetypes_df <- tibble(
+  archetype = c("Compact\n(40%)", "Balanced\n(35%)", "Owl\n(15%)", "Lark\n(10%)"),
+  pct = c(40, 35, 15, 10),
+  color = c("#3498db", "#2ecc71", "#9b59b6", "#f39c12")
+)
+
+p1 <- ggplot(archetypes_df, aes(x = archetype, y = pct, fill = archetype)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = archetypes_df$color) +
+  ylim(0, 50) +
+  labs(
+    x = NULL,
+    y = "Percentage of Faculty",
+    title = "Faculty Preference Types"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(size = 12)
+  )
+
+# 1b) Time preferences line plot
+time_pref_df <- tribble(
+  ~hour,   ~compact, ~balanced, ~owl, ~lark,
+  "8:00",   -3,      -10,      -10,   4,
+  "9:40",   -1,       -3,       -5,   3,
+  "11:20",   0,        0,       -3,   1,
+  "13:00",   0,       -1,        0,  -1,
+  "14:40",  -1,       -2,        2,  -4,
+  "16:20",  -4,      -10,        3,  -8,
+  "18:00",  -6,      -10,        4, -10
+)
+
+# Melt to long format
+time_pref_long <- time_pref_df %>%
+  pivot_longer(cols = c(compact, balanced, owl, lark),
+               names_to = "type",
+               values_to = "score")
+
+colors <- c(
+  "compact" = "#3498db",
+  "balanced" = "#008000",
+  "owl"     = "#9b59b6",
+  "lark"    = "#f39c12"
+)
+
+p2 <- ggplot(time_pref_long, aes(x = hour, y = score, group = type, color = type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, aes(shape = type)) +
+  scale_color_manual(values = colors) +
+  scale_shape_manual(values = c("compact" = 16, "balanced" = 14, "owl" = 15, "lark" = 17)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.5) +
+  labs(
+    x = "Time Slot",
+    y = "Preference Score",
+    title = "Time Slot Preferences by Type",
+    color = "Type",
+    shape = "Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(size = 12),
+    legend.position = "top"
+  ) +
+  expand_limits(y = c(min(time_pref_long$score) - 1, max(time_pref_long$score) + 1)) +
+  annotate("text", x = Inf, y = Inf, label = "", hjust = 1.1, vjust = 1.1) +
+  theme(panel.grid.major = element_line())
+
+# Arrange side by side
+library(patchwork)
+p1 + p2 + plot_layout(widths = c(1, 1))
+```
+
+
+---
+
+## Part 3: VCG Preference Elicitation Algorithm
+
+### What It Does
+
+::: columns
+::: {.column width="50%"}
+**Input**:
+- synthetic schedule
+- synthetic preferences
+- 42 time slots × 600 lecturers
+
+**Process** (per lecturer):
+1. Load preference vector $v_{ij}$ + noise $\epsilon$
+2. Set $\lambda = 0.5 \times \text{range}(v)$
+3. Solve ILP:
+```python
+#!/usr/bin/env python3
+   max: Σ val[j]×y[i,j] - λ×Σ z[d]
+   s.t: each course → one slot
+        no self-conflicts
+        z[d] ≥ y[i,j] if j ∈ day d
+```
+4. Calculate VCG payment (= 0 here)
+:::
+
+::: {.column width="50%"}
+**Output**:
+```
+course,lecturer,day,hour
+C0001,Alice,Monday,09:40-11:10
+C0002,Alice,Monday,14:40-16:10
+C0003,Bob,Thursday,08:00-09:30
+...
+```
+
+**Note**: These are **preferences**, not final assignments!
+
+**Result Stats**:
+- 2,000 preferences collected
+- Day clustering achieved
+- Truthful reporting incentivized
+- Runtime: ~15 seconds
+:::
+:::
+
+::: {.fragment .highlight-current-blue}
+**Note also**: Each lecturer optimizes locally **but** Global LP respects these as soft constraints
+:::
+
+---
+
+## Stage 4: How Global Optimization Works
+
+```{=html}
+<style>
+.flow-diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    margin: 40px auto;
+    font-size: 1.2em;
+}
+.flow-box {
+    padding: 15px 30px;
+    border-radius: 8px;
+    text-align: center;
+    min-width: 250px;
+    position: relative;
+}
+.flow-box.blue { background: #e3f2fd; border: 3px solid #1976d2; }
+.flow-box.orange { background: #fff3e0; border: 3px solid #f57c00; }
+.flow-box.green { background: #c8e6c9; border: 3px solid #388e3c; }
+.flow-box.gray { background: #f5f5f5; border: 2px solid #666; }
+.arrow {
+    font-size: 2em;
+    color: #666;
+    margin: -10px 0;
+}
+.split {
+    display: flex;
+    gap: 50px;
+    align-items: center;
+}
+</style>
+
+<div class="flow-diagram">
+    <div class="flow-box blue">
+        <strong>2,000 VCG Preferences</strong><br>
+        From Stage 3
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-box gray">
+        <strong>Build 88,023 Candidates</strong><br>
+        Preferred + Alternative slots
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-box orange">
+        <strong>Solve Global LP</strong><br>
+        Minimize: waste + time penalties<br>
+        Time: 2.77 seconds
+    </div>
+    <div class="arrow">↓</div>
+    <div class="split">
+        <div class="flow-box gray">
+            <strong>Initial: 74.5%</strong><br>
+            1,490 scheduled<br>
+            56% kept preferences
+        </div>
+        <div class="flow-box gray">
+            <strong>Remaining: 25.5%</strong><br>
+            510 unscheduled<br>
+            Need post-processing
+        </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-box green">
+        <strong>Final: 100% Success!</strong><br>
+        2,000 scheduled<br>
+        63% kept preferences
+    </div>
+</div>
+```
+
+::: {style="text-align: center; font-size: 1.3em; margin-top: 30px;"}
+**Note**: VCG outputs are soft constraints → 100% feasibility + high satisfaction
+:::
+
+### Key Constraints
+
+::: {.incremental}
+- **Assignment**: Each course gets exactly one room/time
+- **Capacity**: Room must fit enrolled students  
+- **No conflicts**: One course per room per slot
+- **Lecturer conflicts**: Can't be in two places
+- **Preferences as soft constraints**
+:::
+
+---
+
+## Optimization: Real-World Complexity
+
+
+### Room Availability & Room Type Distribution
+
+
+```{r echo=FALSE, message=FALSE, class='r-stretch'}
+library(tidyverse)
+library(patchwork)
+
+# 2a) Room availability bar chart
+slots <- c("8:00", "9:40", "11:20", "13:00", "14:40", "16:20", "18:00")
+availability <- c(0.7, 1.0, 1.0, 0.9, 1.0, 0.8, 0.4)
+available_rooms <- floor(150 * availability)
+
+room_avail_df <- tibble(
+  slot = factor(slots, levels = slots),
+  rooms = available_rooms
+)
+
+room_avail_df <- room_avail_df %>%
+  mutate(
+    fill_color = if_else(rooms < 120, "#e74c3c", "#2ecc71")
+  )
+
+p3 <- ggplot(room_avail_df, aes(x = slot, y = rooms, fill = fill_color)) +
+  geom_col(show.legend = FALSE) +
+  geom_hline(yintercept = 150, linetype = "dashed", color = "black") +
+  labs(
+    x = "Time Slot",
+    y = "Available Rooms",
+    title = "Room Availability by Time"
+  ) +
+  ylim(0, 160) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(size = 12)
+  ) +
+  scale_fill_identity() +
+  geom_text(aes(label = rooms), vjust = -0.5, size = 4)
+
+# 2b) Room type distribution pie chart
+room_types_df <- tibble(
+  type = c("Large", "Medium", "Standard", "Seminar", "Special"),
+  count = c(12, 25, 65, 35, 13),
+  color = c("#3498db", "#2ecc71", "#f39c12", "#e74c3c", "#9b59b6")
+)
+
+p4 <- ggplot(room_types_df, aes(x = "", y = count, fill = type)) +
+  geom_col(width = 1, show.legend = TRUE) +
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = room_types_df$color) +
+  labs(fill = "Room Type", title = "Room Type Distribution (150 total)") +
+  theme_void(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(face = "bold")
+  ) +
+  geom_text(aes(label = paste0(round(count / sum(room_types_df$count) * 100), "%")),
+            position = position_stack(vjust = 0.5), size = 4)
+
+# Arrange side by side
+p3 + p4 + plot_layout(widths = c(5, 5))
+
+```
+
+::: {.fragment}
+**Challenge**: Peak slots (9:40-14:30) have 100% demand but limited rooms!
+:::
+
+---
+
+## Results: Performance Metrics {background-color="#2e7d32"}
+
+### Overall Performance {.center}
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(patchwork)
+library(scales)
+
+# Set theme
+theme_set(theme_minimal(base_size = 16))
+```
+
+::: {.columns}
+::: {.column width="50%"}
+### Initial LP Solution
+- **74.5%** courses scheduled
+- **56.1%** kept preferred slot
+- 510 courses unscheduled
+- Room congestion issues
+:::
+
+::: {.column width="50%"}
+### After Post-Processing
+- **100%** courses scheduled
+- **62.9%** kept preferred slot
+- Preference-based redistribution
+- Full resource utilization
+:::
+:::
+
+---
+
+## Scheduling Success Analysis
+
+```{r success-visualization, echo=FALSE, fig.width=11, fig.height=7}
+# Actual data from extraction
+pref_data <- data.frame(
+  Stage = factor(c("Initial LP\n(1,490 courses)", 
+                   "Post-Process\n(510 courses)", 
+                   "Final Result\n(2,000 courses)"),
+                 levels = c("Initial LP\n(1,490 courses)", 
+                           "Post-Process\n(510 courses)", 
+                           "Final Result\n(2,000 courses)")),
+  Preferred = c(836, 422, 1258),
+  Changed = c(654, 88, 742),
+  Total = c(1490, 510, 2000)
+) %>%
+  mutate(
+    Pref_Pct = Preferred / Total * 100,
+    Changed_Pct = Changed / Total * 100
+  )
+
+pref_data_long <- pref_data %>%
+  select(Stage, Preferred, Changed) %>%
+  pivot_longer(cols = c(Preferred, Changed),
+               names_to = "Status",
+               values_to = "Count") %>%
+  left_join(pref_data %>% select(Stage, Total), by = "Stage") %>%
+  mutate(Percentage = Count / Total * 100,
+         Status = factor(Status, levels = c("Changed", "Preferred")))
+
+ggplot(pref_data_long, aes(x = Stage, y = Count, fill = Status)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = paste0(Count, "\n(", round(Percentage, 0), "%)")), 
+            position = position_stack(vjust = 0.5), 
+            size = 5, fontface = "bold", color = "white") +
+  scale_fill_manual(values = c("Changed" = "#c0392b", "Preferred" = "#27ae60"),
+                    labels = c("Time Changed", "Kept Preference")) +
+  labs(title = "Preferences Kept Across Scheduling Stages",
+       x = NULL, y = "Number of Courses", fill = NULL) +
+  theme(legend.position = "top",
+        plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+        axis.text = element_text(size = 14),
+        legend.text = element_text(size = 14))
+```
+
+::: {.notes}
+- Initial LP achieves 56% preference satisfaction but leaves 26% unscheduled
+- Post-processing adds remaining courses with 83% getting preferred slots
+- Final result: 100% scheduled, 63% preference satisfaction
+:::
+
+---
+
+## Room Utilization Impact
+
+```{r room-util-advanced, echo=FALSE, fig.width=12, fig.height=7}
+# Actual room utilization data from extraction
+room_data <- data.frame(
+  Slot = rep(c("Mon\n8:00", "Mon\n9:40", "Mon\n11:20", "Mon\n13:00", 
+               "Mon\n14:40", "Mon\n16:20", "Thu\n8:00", "Thu\n14:40"), each = 2),
+  Stage = rep(c("Initial Preferences", "Final Schedule"), 8),
+  Usage = c(115, 150,  # Mon 8:00
+            28, 150,   # Mon 9:40
+            200, 150,  # Mon 11:20
+            85, 150,   # Mon 13:00
+            55, 150,   # Mon 14:40
+            15, 150,   # Mon 16:20
+            115, 64,   # Thu 8:00
+            147, 70)   # Thu 14:40
+) %>%
+  mutate(
+    Utilization = Usage / 150 * 100,
+    Stage = factor(Stage, levels = c("Initial Preferences", "Final Schedule"))
+  )
+
+ggplot(room_data, aes(x = Slot, y = Usage, fill = Stage)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_hline(yintercept = 150, linetype = "dashed", color = "red", size = 1.2) +
+  geom_hline(yintercept = 120, linetype = "dotted", color = "orange", size = 1) +
+  geom_text(aes(label = Usage), position = position_dodge(width = 0.7), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("Initial Preferences" = "#7f8c8d", 
+                               "Final Schedule" = "#2c3e50")) +
+  annotate("text", x = 7, y = 145, label = "Max Capacity", 
+           color = "red", size = 3.5, fontface = "italic") +
+  annotate("text", x = 7, y = 115, label = "80% Threshold", 
+           color = "orange", size = 3.5, fontface = "italic") +
+  labs(title = "Resource Rebalancing: Monday Absorption vs Thursday Relief",
+       subtitle = "Algorithm shifts load from preferred Thursday slots to underutilized Monday slots",
+       x = "Time Slot", y = "Rooms Used (out of 150)",
+       fill = NULL) +
+  theme(legend.position = "top",
+        plot.title = element_text(size = 20, face = "bold"),
+        plot.subtitle = element_text(size = 14, color = "gray40"),
+        axis.text = element_text(size = 12))
+```
+
+::: {.fragment}
+Monday slots reach full capacity (100%) while Thursday congestion is relieved
+:::
+
+---
+
+## Time Slot Redistribution Pattern
+
+```{r redistribution-matrix, echo=FALSE, fig.width=11, fig.height=7, message=FALSE}
+# Actual redistribution data from extraction
+redistribution_data <- data.frame(
+  Day = c("Monday", "Monday", "Monday", "Thursday", "Monday", "Thursday", 
+          "Monday", "Tuesday", "Monday", "Wednesday", "Monday", "Friday",
+          "Thursday", "Thursday", "Friday"),
+  Hour = c("16:20-17:50", "09:40-11:10", "14:40-16:10", "14:40-16:10", 
+           "13:00-14:30", "08:00-09:30", "11:20-12:50", "11:20-12:50",
+           "08:00-09:30", "11:20-12:50", "18:00-19:30", "11:20-12:50",
+           "11:20-12:50", "13:00-14:30", "13:00-14:30"),
+  Change = c(135, 122, 95, -77, 65, -51, -50, -37, 35, -34, 34, -32, -30, -29, -25)
+)
+
+# Create full heatmap data
+all_slots <- expand.grid(
+  Day = factor(c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"),
+               levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")),
+  Hour = factor(c("08:00-09:30", "09:40-11:10", "11:20-12:50", "13:00-14:30", 
+                  "14:40-16:10", "16:20-17:50", "18:00-19:30"),
+                levels = c("08:00-09:30", "09:40-11:10", "11:20-12:50", "13:00-14:30", 
+                          "14:40-16:10", "16:20-17:50", "18:00-19:30"))
+)
+
+# Merge with actual changes
+heatmap_data <- all_slots %>%
+  left_join(redistribution_data, by = c("Day", "Hour")) %>%
+  mutate(Change = ifelse(is.na(Change), 0, Change))
+
+# Create labels for significant changes only
+heatmap_data <- heatmap_data %>%
+  mutate(Label = ifelse(abs(Change) > 20, sprintf("%+d", Change), ""))
+
+ggplot(heatmap_data, aes(x = Hour, y = Day, fill = Change)) +
+  geom_tile(color = "white", size = 1.5) +
+  geom_text(aes(label = Label), 
+            size = 4.5, fontface = "bold",
+            color = ifelse(abs(heatmap_data$Change) > 50, "white", "black")) +
+  scale_fill_gradient2(low = "#c0392b", mid = "white", high = "#27ae60", 
+                       midpoint = 0, limits = c(-80, 140),
+                       name = "Course\nChange",
+                       breaks = c(-75, -50, -25, 0, 25, 50, 75, 100, 125)) +
+  scale_x_discrete(labels = function(x) gsub("(\\d{2}:\\d{2})-(\\d{2}:\\d{2})", "\\1-\n\\2", x)) +
+  labs(title = "Course Redistribution Across Time Slots",
+       subtitle = "Monday absorbs courses (green) while Thursday/mid-week slots are relieved (red)",
+       x = "Time Slot", y = "Day of Week") +
+  theme(plot.title = element_text(size = 20, face = "bold"),
+        plot.subtitle = element_text(size = 12, color = "gray40"),
+        axis.text = element_text(size = 11),
+        axis.text.x = element_text(angle = 0, hjust = 0.5, lineheight = 0.8),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 10))
+```
+
+::: {.fragment}
+**Pattern**: Algorithm concentrates load on Monday (all slots +35 to +135) to relieve Thursday pressure
+:::
+
+---
+
+## Algorithm Performance Summary
+
+```{r final-summary, echo=FALSE, fig.width=12, fig.height=7}
+# Actual performance metrics
+p1 <- data.frame(
+  Metric = c("Courses\nScheduled", "Preference\nSatisfaction", "Peak Room\nUtilization"),
+  Initial = c(74.5, 56.1, 92.0),
+  Final = c(100, 62.9, 100)
+) %>%
+  pivot_longer(cols = c(Initial, Final), names_to = "Stage", values_to = "Value") %>%
+  mutate(Stage = factor(Stage, levels = c("Initial", "Final"))) %>%
+  ggplot(aes(x = Metric, y = Value, fill = Stage)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = paste0(Value, "%")), 
+            position = position_dodge(width = 0.7),
+            vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_manual(values = c("Initial" = "#7f8c8d", "Final" = "#2c3e50")) +
+  labs(title = "Key Performance Indicators",
+       x = NULL, y = "Percentage (%)", fill = NULL) +
+  ylim(0, 110) +
+  theme(legend.position = "top",
+        plot.title = element_text(size = 18, face = "bold"))
+
+# Room utilization details
+p2 <- data.frame(
+  Metric = c("Avg Room\nUsage", "Post-Process\nDistance"),
+  Value = c(47.6, 0.5),
+  Max = c(150, 10)
+) %>%
+  ggplot(aes(x = Metric, y = Value)) +
+  geom_col(fill = "#2c3e50", width = 0.6) +
+  geom_text(aes(label = c("47.6/150\nrooms", "0.5 avg\nslot distance")), 
+            vjust = -0.5, size = 4.5, fontface = "bold") +
+  labs(title = "Efficiency Metrics",
+       x = NULL, y = "Value") +
+  ylim(0, 60) +
+  theme(plot.title = element_text(size = 18, face = "bold"))
+
+p1 + p2 + plot_layout(widths = c(3, 1))
+```
+
+::: columns
+::: {.column width="50%"}
+**Computational Time**: 2.77s
+- LP solve: 2.77s
+- VCG: ~1s (est.)
+- Post-process: <1s
+:::
+
+::: {.column width="50%"}
+**Post-Processing Success**:
+- 422/510 (83%) kept preference
+- Average distance: 0.5 slots
+:::
+:::
+
+---
+
+## Preference Satisfaction by Lecturer Type
+
+```{r lecturer-type-satisfaction, echo=FALSE, fig.width=10, fig.height=6}
+# Actual lecturer type satisfaction data
+lecturer_satisfaction <- data.frame(
+  Type = c("Owl", "Lark", "Compact", "Balanced"),
+  Satisfaction = c(80.4, 68.4, 60.9, 55.5),
+  Count = c(291, 256, 793, 660)
+) %>%
+  mutate(Type = factor(Type, levels = c("Owl", "Lark", "Compact", "Balanced")))
+
+# Create visualization with archetype descriptions
+ggplot(lecturer_satisfaction, aes(x = Type, y = Satisfaction, fill = Type)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = paste0(Satisfaction, "%")), 
+            vjust = -0.5, size = 6, fontface = "bold") +
+  geom_text(aes(label = paste0("n=", Count)), 
+            vjust = 1.5, size = 4, color = "white", fontface = "bold") +
+  scale_fill_manual(values = c("Owl" = "#9b59b6", "Lark" = "#f39c12", 
+                               "Compact" = "#3498db", "Balanced" = "#2ecc71")) +
+  labs(title = "Preference Satisfaction Varies by Lecturer Archetype",
+       subtitle = "Flexible scheduling preferences (Owl/Lark) achieve higher satisfaction",
+       x = "Lecturer Type", y = "Satisfaction Rate (%)") +
+  ylim(0, 90) +
+  theme(plot.title = element_text(size = 20, face = "bold"),
+        plot.subtitle = element_text(size = 14, color = "gray40"),
+        axis.text = element_text(size = 14))
+```
+
+::: columns
+::: {.column width="25%"}
+**Owl** (15%)
+Evening preference
+Most flexible
+:::
+
+::: {.column width="25%"}
+**Lark** (10%)
+Morning preference
+Time-flexible
+:::
+
+::: {.column width="25%"}
+**Compact** (40%)
+Clustered days
+Moderate flexibility
+:::
+
+::: {.column width="25%"}
+**Balanced** (35%)
+Even distribution
+Least flexible
+:::
+:::
+
+::: {.fragment}
+**Insight**: Algorithm performs best with flexible preferences; rigid constraints reduce satisfaction
+:::
+
+---
+
+## Compared to Alternatives
+
+::: {.columns}
+::: {.column width="33%"}
+### VCG-Only
+- ❌ Ignores room capacity
+- ❌ Creates conflicts
+- ✓ 100% preferences
+- ⚡ 0.8s runtime
+:::
+
+::: {.column width="33%"}
+### LP-Only
+- ✓ Respects capacity
+- ❌ No preference model
+- ❌ Low satisfaction
+- ⚡ indefinite
+:::
+
+::: {.column width="33%"}
+### **Hybrid (Ours)**
+- ✓ Respects capacity
+- ✓ Models preferences
+- ✓ 63% satisfaction
+- ⚡ 4.1s runtime
+:::
+:::
+
+::: {.fragment .highlight-current-green}
+**Best of both worlds: Feasibility + Satisfaction**
+:::
+
+---
+
+## About theory
+
+:::: {.columns}
+::: {.column width="50%"}
+### Mechanism Design
+- **Truthfulness** in multi-dimensional preferences
+- **VCG adaptation** for scheduling
+- **Day-clustering**  integration
+:::
+
+::: {.column width="50%"}
+### Operations Research  
+- **Multi-level optimization** framework
+- **Hard/Soft constraint** handling at scale
+- **Post-processing** for infeasibilities
+:::
+::::
+
+::: {.fragment}
+### What's new
+> A framework to guarantee **strategy-proofness** while maintaining **computational tractability** for real-world university scheduling?
+:::
+
+---
+
+## Management Perspective {background-color="#1e3a5f"}
+
+### Implementation Requirements
+
+::: {.incremental}
+1. **Data Infrastructure**
+   - Centralized enrollment database
+   - Room inventory system
+   - Preference collection portal
+
+2. **Change Management**
+   - Faculty support on preference reporting
+   - Transparency in allocation process
+   - Pilot testing with volunteer departments
+
+3. **Success Factors**
+   - Time
+   - Database integration  
+   - Cost-Benefit Analysis
+:::
+
+
+---
+
+## Scalability & Future Work
+
+### Computational Performance
+- **2,000 courses**: several minutes (demonstrated)
+- **with added complexity**: ~several hours (projected)
+- **more constraints**: Commercial solver needed
+
+### Extensions
+::: {.incremental}
+- **Multi-campus** coordination
+- **Online/hybrid** course integration  
+- **Student preferences** (course selection)
+- **Dynamic rescheduling** (cancellations)
+:::
+
+---
+
+## Conclusions {background-color="#2e7d32"}
+
+### This Excercise Demonstrates
+
+::: {.incremental}
+1. **Hybrid mechanism-LP** approach is **doable** for real universities
+2. **preference satisfaction** exists while maintaining **high utilization**
+3. **Strategy-proof** system that faculty will use honestly
+4. **Computational feasibility** for medium-scale problems
+:::
+
+---
+
+## Thank You! {background-color="#1e3a5f"}
+
+**Contact**: vavramov@nbu.bg
+
+**Code & Data**: [github.com/quantumjazz/hybrid-scheduling](https://github.com)
+
+:::: {.columns}
+::: {.column width="50%"}
+### Try it yourself!
+```python
+
+"""
+Ultra-minimal hybrid scheduling demo
+Perfect for live coding in 5 minutes!
+"""
+
+import pulp
+import pandas as pd
+
+# Tiny example: 3 lecturers, 6 courses, 4 rooms, 4 slots
+courses = pd.DataFrame({
+    'id': ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'],
+    'lecturer': ['Alice', 'Alice', 'Bob', 'Bob', 'Carol', 'Carol'],
+    'size': [80, 40, 60, 30, 50, 70]
+})
+
+rooms = {'R1': 100, 'R2': 80, 'R3': 50, 'R4': 40}
+slots = ['Mon-AM', 'Mon-PM', 'Tue-AM', 'Tue-PM']
+
+# Lecturer preferences (0-10 scale)
+preferences = {
+    'Alice': [10, 8, 4, 2],   # Morning person
+    'Bob':   [5, 10, 10, 5],  # Prefers consecutive
+    'Carol': [2, 4, 8, 10]    # Afternoon person
+}
+
+print("🎓 MINI SCHEDULING DEMO\n")
+
+# STEP 1: VCG - Each lecturer picks preferred slots
+print("1️⃣ VCG: Lecturers express preferences")
+lecturer_prefs = {}
+
+for lecturer in ['Alice', 'Bob', 'Carol']:
+    lect_courses = courses[courses.lecturer == lecturer]
+    
+    # Simple heuristic: assign to top-k preferred slots
+    pref_scores = list(enumerate(preferences[lecturer]))
+    pref_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    for i, (course_id, _) in enumerate(lect_courses.iterrows()):
+        if i < len(pref_scores):
+            slot_idx = pref_scores[i][0]
+            lecturer_prefs[course_id] = slots[slot_idx]
+            print(f"  {lect_courses.iloc[i]['id']}: {lecturer} → {slots[slot_idx]}")
+
+# STEP 2: LP - Assign rooms respecting capacity
+print("\n2️⃣ LP: Global room assignment")
+prob = pulp.LpProblem("Rooms", pulp.LpMinimize)
+
+# Variables: assign[course, slot, room]
+x = {}
+for idx, course in courses.iterrows():
+    pref_slot = lecturer_prefs[idx]
+    
+    # Try preferred slot first
+    for room, cap in rooms.items():
+        if cap >= course['size']:
+            x[(course['id'], pref_slot, room)] = pulp.LpVariable(
+                f"{course['id']}_{pref_slot}_{room}", cat="Binary"
+            )
+    
+    # Add one alternative for flexibility
+    for alt_slot in slots:
+        if alt_slot != pref_slot:
+            for room, cap in rooms.items():
+                if cap >= course['size']:
+                    x[(course['id'], alt_slot, room)] = pulp.LpVariable(
+                        f"{course['id']}_{alt_slot}_{room}", cat="Binary"
+                    )
+            break  # Just one alternative
+
+# Minimize: waste + 10*changes
+costs = []
+for (c_id, slot, room), var in x.items():
+    course = courses[courses.id == c_id].iloc[0]
+    waste = rooms[room] - course['size']
+    is_preferred = (slot == lecturer_prefs[course.name])
+    cost = waste + (0 if is_preferred else 10)
+    costs.append(cost * var)
+
+prob += pulp.lpSum(costs)
+
+# Each course gets one assignment
+for c_id in courses.id:
+    vars_for_course = [var for (c, s, r), var in x.items() if c == c_id]
+    prob += pulp.lpSum(vars_for_course) == 1
+
+# No room conflicts
+for slot in slots:
+    for room in rooms:
+        vars_for_room = [var for (c, s, r), var in x.items() 
+                         if s == slot and r == room]
+        if vars_for_room:
+            prob += pulp.lpSum(vars_for_room) <= 1
+
+# Solve and show results
+prob.solve(pulp.COIN_CMD(msg=False))
+
+print("\n✅ FINAL SCHEDULE:")
+print(f"{'Course':<8} {'Slot':<10} {'Room':<6} {'Status'}")
+print("-" * 35)
+
+kept_pref = 0
+for (c_id, slot, room), var in x.items():
+    if var.value() > 0.5:
+        course = courses[courses.id == c_id].iloc[0]
+        is_pref = slot == lecturer_prefs[course.name]
+        if is_pref:
+            kept_pref += 1
+        status = "✓" if is_pref else "moved"
+        print(f"{c_id:<8} {slot:<10} {room:<6} {status}")
+
+print(f"\nSatisfaction: {kept_pref}/{len(courses)} = {kept_pref/len(courses)*100:.0f}%")
+```
+:::
+
+::: {.column width="50%"}
+### Next steps
+- Extending to student preferences
+- Building open-source tool
+:::
+::::
